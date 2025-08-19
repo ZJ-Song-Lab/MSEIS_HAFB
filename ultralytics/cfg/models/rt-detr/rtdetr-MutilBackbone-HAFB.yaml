@@ -7,7 +7,6 @@ scales: # model compound scaling constants, i.e. 'model=yolov8n-cls.yaml' will c
   # [depth, width, max_channels]
   l: [1.00, 1.00, 1024]
 
-# From BiliBili 魔鬼面具
 backbone:
   - [-1, 1, HGStem, [16, 32]]  # 0-P2/4
 
