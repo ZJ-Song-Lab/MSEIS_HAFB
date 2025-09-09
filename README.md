@@ -15,9 +15,9 @@ Extensive experiments on the **SSDD**, **RSDD-SAR**, and **HRSID** datasets demo
 ---
 
 ## 🚀 Features
-- **Robustness:**The model effectively detects ships in SAR images, handling challenges like speckle noise and sea clutter with high accuracy.
+- **Robustness:** The model effectively detects ships in SAR images, handling challenges like speckle noise and sea clutter with high accuracy.
 - **Enhanced Features:** It uses specialized modules to enhance multi-scale features, improve edge detection, and fuse information from different levels.
-- **Few-Shot Learning:**The model can perform well even with a limited number of training examples, making it highly adaptable for real-world use.
+- **Few-Shot Learning:** The model can perform well even with a limited number of training examples, making it highly adaptable for real-world use.
 
 ## ⚙️ Installation
 ```bash
@@ -39,16 +39,6 @@ python train.py --data configs/ssdd.yaml --epochs 300 --batch 16 --device 0
 
 ---
 
-## 🔍 Evaluation
-```bash
-# Run evaluation
-python val.py --data configs/ssdd.yaml --weights runs/train/exp/weights/best.pt
-```
-
----
-
----
-
 ## 📸 Visualization
 Detection results under **coastal clutter** and **open-sea scenarios**:
 
@@ -57,10 +47,6 @@ Detection results under **coastal clutter** and **open-sea scenarios**:
 ---
 
 
-
-oject Page**: [GitHub](https://github.com/ZJ-Song-Lab/MSEIS_HAFB)
-
----
 
 ## 📜 License
 This project is released under the **MIT License**. See [LICENSE](./LICENSE) for details.
