@@ -42,7 +42,7 @@ python train.py --data configs/ssdd.yaml --epochs 300 --batch 16 --device 0
 ## 📸 Visualization
 Detection results under **coastal clutter** and **open-sea scenarios**:
 
-<img src="./feature.jpg" width="80%">
+<img src="./feature.png" width="80%">
 
 ---
 
