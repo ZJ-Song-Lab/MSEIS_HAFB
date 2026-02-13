@@ -9,6 +9,8 @@ Synthetic Aperture Radar (SAR) ship detection is crucial for maritime surveillan
 
 Extensive experiments on the **SSDD**, **RSDD-SAR**, and **HRSID** datasets demonstrate that our model achieves state-of-the-art detection accuracy. 
 
+<img src="./framework.PNG" width="80%">
+
 [[Paper PDF](./paper.pdf)] (coming soon)  
 [[Project Page](https://github.com/ZJ-Song-Lab/MSEIS_HAFB)]
 
