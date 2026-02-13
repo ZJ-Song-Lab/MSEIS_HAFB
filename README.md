@@ -1,4 +1,4 @@
-# Robust SAR Ship Detection in Complex Backgrounds with Few-Shot Learning
+# Spatial-Channel-Gated Hierarchical Attention for Robust SAR Ship Detection in Complex Environments
 
 ## 📖 Abstract
 Synthetic Aperture Radar (SAR) ship detection is crucial for maritime surveillance but is hindered by speckle noise, complex sea clutter, and the demand for precise edge localization. To address these challenges, we propose a novel deep neural network composed of three specialized modules:
