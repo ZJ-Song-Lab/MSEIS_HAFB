@@ -20,46 +20,72 @@ from ultralytics.utils.torch_utils import fuse_conv_and_bn, make_divisible
 
 from timm.layers import CondConv2d, DropPath, trunc_normal_, use_fused_attn, to_2tuple
 
-__all__ = ['CSP_MutilScaleEdgeInformationEnhance',  'CSP_MutilScaleEdgeInformationSelect', 'EdgeEnhancer', 'MutilScaleEdgeInformationEnhance',
-           'MutilScaleEdgeInformationSelect', 'MutilScaleEdgeInfoGenetator', 'HaarWaveletConv', 'HAFB',
+__all__ = ['CSP_MutilScaleEdgeInformationEnhance', 'CSP_MultiScaleEdgeInformationSelect', 'EdgeEnhancer', 'MutilScaleEdgeInformationEnhance',
+           'MultiScaleEdgeInformationSelection', 'MutilScaleEdgeInfoGenetator', 'HaarWaveletConv', 'HierarchicalAttentionFusionBlock',
            'ContrastDrivenFeatureAggregation', 'SobelConv' , 'ConvEdgeFusion'
            ]
 
 
-# 1.使用 nn.AvgPool2d 对输入特征图进行平滑操作，提取其低频信息。
-# 2.将原始输入特征图与平滑后的特征图进行相减，得到增强的边缘信息（高频信息）。
-# 3.用卷积操作进一步处理增强的边缘信息。
-# 4.将处理后的边缘信息与原始输入特征图相加，以形成增强后的输出。
-class HAFB(nn.Module):
-    # Hierarchical Attention Fusion Block
-    def __init__(self, inc, ouc, group=False):
-        super(HAFB, self).__init__()
-        ch_1, ch_2 = inc
-        hidc = ouc // 2
+class HierarchicalAttentionFusionBlock(nn.Module):
+    # Hierarchical Attention Fusion Block (HAFB) for cross-scale feature integration
+    # Key improvements: Parallel local-global attention branches and prompt-guided feature gating
+    def __init__(self, input_dims, output_dim, group=False):
+        super(HierarchicalAttentionFusionBlock, self).__init__()
+        dim1, dim2 = input_dims
+        hidden_dim = output_dim // 2
 
-        self.lgb1_local = LocalGlobalAttention(hidc, 2)
-        self.lgb1_global = LocalGlobalAttention(hidc, 4)
-        self.lgb2_local = LocalGlobalAttention(hidc, 2)
-        self.lgb2_global = LocalGlobalAttention(hidc, 4)
+        # Feature projection layers for dimension alignment
+        self.proj1 = Conv(dim1, hidden_dim, 1, act=False)  # Project higher-level feature
+        self.proj2 = Conv(dim2, hidden_dim, 1, act=False)  # Project lower-level feature
+        
+        # Baseline fusion path for initial feature combination
+        self.baseline_fusion = Conv(hidden_dim, output_dim, 3, g=4)  # 3x3 convolution
 
-        self.W_x1 = Conv(ch_1, hidc, 1, act=False)
-        self.W_x2 = Conv(ch_2, hidc, 1, act=False)
-        self.W = Conv(hidc, ouc, 3, g=4)
+        # Multi-scale attention mechanisms
+        # Local attention branch (small patch size) for fine-grained ship contours
+        self.local_attn1 = LocalGlobalAttention(hidden_dim, patch_size=2)  # For higher-level feature
+        self.local_attn2 = LocalGlobalAttention(hidden_dim, patch_size=2)  # For lower-level feature
+        # Global attention branch (large patch size) for spatial context
+        self.global_attn1 = LocalGlobalAttention(hidden_dim, patch_size=4)  # For higher-level feature
+        self.global_attn2 = LocalGlobalAttention(hidden_dim, patch_size=4)  # For lower-level feature
 
-        self.conv_squeeze = Conv(ouc * 3, ouc, 1)
-        self.rep_conv = RepConv(ouc, ouc, 3, g=(16 if group else 1))
-        self.conv_final = Conv(ouc, ouc, 1)
+        # Feature reorganization block
+        self.dim_reduction = Conv(output_dim * 3, output_dim, 1)  # Channel squeeze
+        self.refinement = RepConv(output_dim, output_dim, 3, g=(16 if group else 1))  # Feature refinement
+        self.final_proj = Conv(output_dim, output_dim, 1)  # Final projection
 
-    def forward(self, inputs):
-        x1, x2 = inputs
-        W_x1 = self.W_x1(x1)
-        W_x2 = self.W_x2(x2)
-        bp = self.W(W_x1 + W_x2)
+    def forward(self, features):
+        # Unpack input features
+        higher_level_feat, lower_level_feat = features
+        
+        # Project features to common hidden dimension
+        proj_higher = self.proj1(higher_level_feat)
+        proj_lower = self.proj2(lower_level_feat)
+        
+        # Baseline fusion path
+        baseline_feat = self.baseline_fusion(proj_higher + proj_lower)
 
-        x1 = torch.cat([self.lgb1_local(W_x1), self.lgb1_global(W_x1)], dim=1)
-        x2 = torch.cat([self.lgb2_local(W_x2), self.lgb2_global(W_x2)], dim=1)
+        # Apply multi-scale attention
+        # Local attention for detailed ship structures
+        local_higher = self.local_attn1(proj_higher)
+        local_lower = self.local_attn2(proj_lower)
+        # Global attention for contextual information
+        global_higher = self.global_attn1(proj_higher)
+        global_lower = self.global_attn2(proj_lower)
+        
+        # Combine attention outputs
+        attn_higher = torch.cat([local_higher, global_higher], dim=1)
+        attn_lower = torch.cat([local_lower, global_lower], dim=1)
 
-        return self.conv_final(self.rep_conv(self.conv_squeeze(torch.cat([x1, x2, bp], 1))))
+        # Final fusion of all feature paths
+        merged_feat = torch.cat([attn_higher, attn_lower, baseline_feat], dim=1)
+        
+        # Reorganize and refine features
+        output = self.dim_reduction(merged_feat)
+        output = self.refinement(output)
+        output = self.final_proj(output)
+        
+        return output
 
 class EdgeEnhancer(nn.Module):
     def __init__(self, in_dim):
@@ -101,32 +127,69 @@ class MutilScaleEdgeInformationEnhance(nn.Module):
         return self.final_conv(torch.cat(out, 1))
 
 
-class MutilScaleEdgeInformationSelect(nn.Module):
-    def __init__(self, inc, bins):
-        super().__init__()
+class MultiScaleEdgeInformationSelection(nn.Module):
+    # Multi-Scale Edge Information Selection (MSEIS) module
+    # Key improvements: Multi-scale edge extraction and spatial-channel feature gating
+    def __init__(self, in_channels, scale_bins):
+        super(MultiScaleEdgeInformationSelection, self).__init__()
+        self.in_channels = in_channels
+        self.scale_bins = scale_bins
+        self.num_scales = len(scale_bins)
 
-        self.features = []
-        for bin in bins:
-            self.features.append(nn.Sequential(
-                nn.AdaptiveAvgPool2d(bin),
-                Conv(inc, inc // len(bins), 1),
-                Conv(inc // len(bins), inc // len(bins), 3, g=inc // len(bins))
-            ))
-        self.ees = []
-        for _ in bins:
-            self.ees.append(EdgeEnhancer(inc // len(bins)))
-        self.features = nn.ModuleList(self.features)
-        self.ees = nn.ModuleList(self.ees)
-        self.local_conv = Conv(inc, inc, 3)
-        self.dsm = DualDomainSelectionMechanism(inc * 2)
-        self.final_conv = Conv(inc * 2, inc)
+        # Local context extraction branch
+        self.local_context = Conv(in_channels, in_channels, 3)  # Capture immediate structural cues
+
+        # Multi-scale edge processing paths
+        self.scale_processors = nn.ModuleList()
+        self.edge_enhancers = nn.ModuleList()
+        
+        for scale in scale_bins:
+            # Scale-specific feature extraction
+            scale_processor = nn.Sequential(
+                nn.AdaptiveAvgPool2d(scale),  # Downsample to scale-specific size
+                Conv(in_channels, in_channels // self.num_scales, 1),  # Channel adjustment
+                Conv(in_channels // self.num_scales, in_channels // self.num_scales, 3, 
+                     g=in_channels // self.num_scales)  # Scale-specific convolution
+            )
+            self.scale_processors.append(scale_processor)
+            
+            # Edge Enhancement Unit (EEU) for each scale
+            self.edge_enhancers.append(EdgeEnhancer(in_channels // self.num_scales))
+
+        # Spatial-Channel Feature Gating (SCFG) for adaptive feature selection
+        self.feature_gate = DualDomainSelectionMechanism(in_channels * 2)
+        
+        # Final feature fusion
+        self.output_conv = Conv(in_channels * 2, in_channels, 1)
 
     def forward(self, x):
-        x_size = x.size()
-        out = [self.local_conv(x)]
-        for idx, f in enumerate(self.features):
-            out.append(self.ees[idx](F.interpolate(f(x), x_size[2:], mode='bilinear', align_corners=True)))
-        return self.final_conv(self.dsm(torch.cat(out, 1)))
+        batch_size, channels, height, width = x.size()
+        
+        # Extract local structural context
+        local_feat = self.local_context(x)
+        
+        # Process multi-scale edge information
+        scale_features = []
+        for scale_proc, enhancer in zip(self.scale_processors, self.edge_enhancers):
+            # Extract scale-specific features
+            scale_feat = scale_proc(x)
+            # Enhance edge information
+            enhanced_feat = enhancer(scale_feat)
+            # Upsample to original resolution
+            enhanced_feat = F.interpolate(enhanced_feat, size=(height, width), 
+                                         mode='bilinear', align_corners=True)
+            scale_features.append(enhanced_feat)
+        
+        # Combine local context and multi-scale edge features
+        combined_feat = torch.cat([local_feat] + scale_features, dim=1)
+        
+        # Adaptive feature selection via SCFG
+        gated_feat = self.feature_gate(combined_feat)
+        
+        # Final feature refinement
+        output = self.output_conv(gated_feat)
+        
+        return output
 
 
 class CSP_MutilScaleEdgeInformationEnhance(C2f):
@@ -135,10 +198,10 @@ class CSP_MutilScaleEdgeInformationEnhance(C2f):
         self.m = nn.ModuleList(MutilScaleEdgeInformationEnhance(self.c, [3, 6, 9, 12]) for _ in range(n))
 
 
-class CSP_MutilScaleEdgeInformationSelect(C2f):
+class CSP_MultiScaleEdgeInformationSelect(C2f):
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
-        self.m = nn.ModuleList(MutilScaleEdgeInformationSelect(self.c, [3, 6, 9, 12]) for _ in range(n))
+        self.m = nn.ModuleList(MultiScaleEdgeInformationSelection(self.c, [3, 6, 9, 12]) for _ in range(n))
 
 class HaarWaveletConv(nn.Module):
     def __init__(self, in_channels, grad=False):

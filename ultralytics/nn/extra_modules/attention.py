@@ -20,7 +20,7 @@ __all__ = ['EMA', 'SimAM', 'SpatialGroupEnhance', 'BiLevelRoutingAttention', 'Bi
            'CoordAtt', 'BAMBlock', 'EfficientAttention', 'LSKBlock', 'SEAttention', 'CPCA', 'MPCA', 'deformable_LKA',
            'EffectiveSEModule', 'LSKA', 'SegNext_Attention', 'DAttention', 'FocusedLinearAttention', 'MLCA', 'TransNeXt_AggregatedAttention',
            'HiLo', 'LocalWindowAttention', 'ELA', 'CAA', 'EfficientAdditiveAttnetion', 'AFGCAttention', 'DualDomainSelectionMechanism',
-           'AttentionTSSA']
+           'AttentionTSSA', 'LocalGlobalAttention']
 
 class SpatialGroupEnhance(nn.Module):
     def __init__(self, groups=8):
@@ -279,3 +279,99 @@ class AttentionTSSA(nn.Module):
 
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+
+
+class LocalGlobalAttention(nn.Module):
+    # Local-Global Attention (LGA) mechanism with prompt-guided gating
+    def __init__(self, dim, patch_size=3, embed_dim=128):
+        super().__init__()
+        self.dim = dim
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        
+        # Patch processing
+        self.patch_size = patch_size
+        
+        # MLP for patch encoding
+        self.mlp = nn.Sequential(
+            nn.Linear(patch_size * patch_size, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+        
+        # Gating parameters
+        self.W_alpha = nn.Linear(embed_dim, embed_dim)
+        self.b_alpha = nn.Parameter(torch.zeros(embed_dim))
+        
+        # Learnable prompt vector
+        self.v_prompt = nn.Parameter(torch.randn(embed_dim) * 0.02)
+        
+        # Projection back to original dimension
+        self.proj = nn.Linear(embed_dim, dim)
+        
+        # Final 1x1 convolution for channel fusion
+        self.final_conv = Conv(dim, dim, 1)
+    
+    def forward(self, x):
+        B, C, H, W = x.size()
+        
+        # Ensure H and W are divisible by patch_size
+        pad_h = (self.patch_size - H % self.patch_size) % self.patch_size
+        pad_w = (self.patch_size - W % self.patch_size) % self.patch_size
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+            B, C, H_pad, W_pad = x.size()
+        else:
+            H_pad, W_pad = H, W
+        
+        # Split into patches
+        num_patches_h = H_pad // self.patch_size
+        num_patches_w = W_pad // self.patch_size
+        num_patches = num_patches_h * num_patches_w
+        
+        # Reshape to patches: (B, C, num_patches_h, patch_size, num_patches_w, patch_size)
+        patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
+        patches = patches.permute(0, 2, 4, 3, 5, 1).contiguous()  # (B, num_patches_h, num_patches_w, patch_size, patch_size, C)
+        patches = patches.view(B, num_patches, self.patch_size * self.patch_size, C)  # (B, num_patches, patch_size^2, C)
+        
+        # Compute spatial descriptor for each patch (average over channels)
+        p_bar = patches.mean(dim=-1)  # (B, num_patches, patch_size^2)
+        
+        # Encode patches with MLP
+        h = self.mlp(p_bar)  # (B, num_patches, embed_dim)
+        
+        # Compute element-wise gate
+        alpha = torch.sigmoid(self.W_alpha(h) + self.b_alpha)  # (B, num_patches, embed_dim)
+        
+        # Form gated embedding
+        u = h * alpha  # (B, num_patches, embed_dim)
+        
+        # Normalize vectors for cosine similarity
+        u_norm = F.normalize(u, dim=-1)
+        v_prompt_norm = F.normalize(self.v_prompt, dim=-1)
+        
+        # Compute scalar gating coefficient using cosine similarity
+        cos_sim = torch.matmul(u_norm, v_prompt_norm)  # (B, num_patches)
+        m = (1 + cos_sim) / 2  # Map to [0, 1]
+        m = m.unsqueeze(-1)  # (B, num_patches, 1)
+        
+        # Apply prompt-modulated gating
+        gated_u = m * u  # (B, num_patches, embed_dim)
+        
+        # Project back to original dimension
+        y = self.proj(gated_u)  # (B, num_patches, dim)
+        
+        # Reshape to low-resolution feature map
+        Z = y.view(B, num_patches_h, num_patches_w, dim).permute(0, 3, 1, 2).contiguous()  # (B, dim, num_patches_h, num_patches_w)
+        
+        # Upsample to original resolution
+        Z_upsampled = F.interpolate(Z, size=(H_pad, W_pad), mode='bilinear', align_corners=True)
+        
+        # Crop back to original size if padded
+        if pad_h > 0 or pad_w > 0:
+            Z_upsampled = Z_upsampled[:, :, :H, :W]
+        
+        # Apply final convolution
+        out = self.final_conv(Z_upsampled)
+        
+        return out

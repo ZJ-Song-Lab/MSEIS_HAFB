@@ -994,7 +994,7 @@ def parse_model(d, ch, verbose=True, warehouse_manager=None):  # model_dict, inp
             c1 = [ch[x] for x in f]
             c2 = c1[0]
             args = [c1]
-        elif m in {HAFB}:
+        elif m in {HierarchicalAttentionFusionBlock}:
             c1 = [ch[x] for x in f]
             c2 = args[0]
             args = [c1, c2, *args[1:]]
